@@ -13,7 +13,7 @@ fn main() {
             Ok((size, source)) => {
                 println!("Received {} bytes from {}", size, source);
                 // DNS Header (12 bytes)
-                let header: [u8; 12] = [0x04, 0xd2, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                let header: [u8; 12] = [0x04, 0xd2, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 0];
                 // DNS Question Section (dummy values)
                 // Format: QNAME + QTYPE (2 bytes) + QCLASS (2 bytes)
                 // Using a simple example: "\x0ccodecrafters\x02io\x00" (codecrafters.io) + TYPE A + CLASS IN
