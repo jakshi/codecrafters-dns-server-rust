@@ -18,7 +18,7 @@ fn main() {
                     0x80, // 1bit: QR (Query/Response Indicator) + 4bits: OPCODE (Operation COde) + 1bit: AA(Authoritative Answer)+ 1bit: T(Truncation)+ 1bit: RD(Recursion Desired)
                     0, // 1bit: RA(Recursion Available)+ 3bits: Z (Reserved for future use) + 4bits: RCODE (Response code)
                     0, 1, // 16bit: QDCOUNT: 1 question
-                    0, 0, // 16bit: ANCOUNT: 0 answers
+                    0, 1, // 16bit: ANCOUNT: 0 answers
                     0, 0, // 16bit: NSCOUNT: 0 authority records
                     0, 0, // 16bit: ARCOUNT: 0 additional records
                 ];
