@@ -1,6 +1,9 @@
 #[allow(unused_imports)]
 use std::net::UdpSocket;
 
+mod dns_header;
+use dns_header::{DnsFlags, DnsHeader};
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
@@ -12,20 +15,41 @@ fn main() {
         match udp_socket.recv_from(&mut buf) {
             Ok((size, source)) => {
                 println!("Received {} bytes from {}", size, source);
-                // DNS Header (12 bytes)
-                let header: [u8; 12] = [
-                    0x04, 0xd2, // 16bit: ID: 0x04d2 (random example) - 1234
-                    0x80, // 1bit: QR (Query/Response Indicator) + 4bits: OPCODE (Operation COde) + 1bit: AA(Authoritative Answer)+ 1bit: T(Truncation)+ 1bit: RD(Recursion Desired)
-                    0, // 1bit: RA(Recursion Available)+ 3bits: Z (Reserved for future use) + 4bits: RCODE (Response code)
-                    0, 1, // 16bit: QDCOUNT: 1 question
-                    0, 1, // 16bit: ANCOUNT: 0 answers
-                    0, 0, // 16bit: NSCOUNT: 0 authority records
-                    0, 0, // 16bit: ARCOUNT: 0 additional records
-                ];
+                let request_header = DnsHeader::from_bytes(&buf[0..12]).unwrap_or_else(|e| {
+                    eprintln!("Error: {}", e);
+                    // Return a default header or handle error differently
+                    std::process::exit(1);
+                });
+
+                let request_flags = dns_header::DnsFlags::from_u16(request_header.flags);
+
+                // Create response flags in a convenient manner
+                let response_flags = DnsFlags {
+                    qr: true,                                             // This is a response
+                    opcode: request_flags.opcode,                         // Standard query
+                    aa: false,                                            // Not authoritative
+                    tc: false,                                            // Not truncated
+                    rd: request_flags.rd,                                 // Recursion not desired
+                    ra: false,                                            // Recursion not available
+                    z: 0,                                                 // Reserved
+                    rcode: if request_flags.opcode == 0 { 0 } else { 4 }, //     0 (no error) if standard query, else 4 (not implemented
+                };
+
+                // Create response header using DnsHeader struct
+                let response_header_struct = DnsHeader {
+                    id: request_header.id,                         // Echo the request ID
+                    flags: response_flags.to_u16(),                // Convert flags to u16
+                    question_count: request_header.question_count, // Echo question count
+                    answer_count: 1,                               // One answer
+                    authority_count: 0,
+                    additional_count: 0,
+                };
+
+                let response_header = response_header_struct.to_bytes();
                 // DNS Question Section (dummy values)
                 // Format: QNAME + QTYPE (2 bytes) + QCLASS (2 bytes)
                 // Using a simple example: "\x0ccodecrafters\x02io\x00" (codecrafters.io) + TYPE A + CLASS IN
-                let question: Vec<u8> = vec![
+                let response_question: Vec<u8> = vec![
                     // QNAME: codecrafters.io encoded as length-prefixed labels
                     0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r',
                     b's', // "codecrafters" (11 chars)
@@ -35,8 +59,8 @@ fn main() {
                     0x00, 0x01, // QCLASS: IN (Internet) (0x0001)
                 ];
 
-                let answer: Vec<u8> = vec![
-                    // NAME: example.com encoded as length-prefixed labels
+                let response_answer: Vec<u8> = vec![
+                    // NAME: codecrafters.io encoded as length-prefixed labels
                     0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r',
                     b's', // "codecrafters" (11 chars)
                     0x02, b'i', b'o', // "io" (2 chars)
@@ -50,9 +74,9 @@ fn main() {
 
                 // Combine header and question into response
                 let mut response = Vec::new();
-                response.extend_from_slice(&header);
-                response.extend_from_slice(&question);
-                response.extend_from_slice(&answer);
+                response.extend_from_slice(&response_header);
+                response.extend_from_slice(&response_question);
+                response.extend_from_slice(&response_answer);
 
                 udp_socket
                     .send_to(&response, source)
