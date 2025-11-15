@@ -2,7 +2,90 @@
 use std::net::UdpSocket;
 
 mod dns_header;
+mod dns_question_and_answer;
+
 use dns_header::{DnsFlags, DnsHeader};
+use dns_question_and_answer::{DnsAnswer, DnsQuestion, RecordClass, RecordType};
+
+/// Parse the DNS request from the buffer
+/// Takes an immutable borrow of the buffer, returns owned structures
+fn parse_request(buf: &[u8]) -> Result<(DnsHeader, Vec<DnsQuestion>), String> {
+    let header =
+        DnsHeader::from_bytes(&buf[0..12]).map_err(|e| format!("Failed to parse header: {}", e))?;
+
+    let mut questions = Vec::new();
+    let mut offset = 12; // Start after header
+
+    for _ in 0..header.question_count {
+        let (question, new_offset) = DnsQuestion::from_bytes(buf, offset)?;
+        questions.push(question);
+        offset = new_offset;
+    }
+
+    Ok((header, questions))
+}
+
+/// Create response header based on request header
+/// Takes a reference to request header, returns owned response header
+fn create_response_header(request_header: &DnsHeader, answer_count: u16) -> DnsHeader {
+    let request_flags = DnsFlags::from_u16(request_header.flags);
+
+    let response_flags = DnsFlags {
+        qr: true,                                             // This is a response
+        opcode: request_flags.opcode,                         // Echo opcode
+        aa: false,                                            // Not authoritative
+        tc: false,                                            // Not truncated
+        rd: request_flags.rd,                                 // Echo recursion desired
+        ra: false,                                            // Recursion not available
+        z: 0,                                                 // Reserved
+        rcode: if request_flags.opcode == 0 { 0 } else { 4 }, // 0 (no error) if standard query, else 4 (not implemented)
+    };
+
+    DnsHeader {
+        id: request_header.id,                         // Echo request ID
+        flags: response_flags.to_u16(),                // Convert flags to u16
+        question_count: request_header.question_count, // Echo question count
+        answer_count,                                  // Number of answers we're providing
+        authority_count: 0,
+        additional_count: 0,
+    }
+}
+
+/// Create response answers based on the questions
+/// Takes a reference to questions, returns owned answer structures
+fn create_response_answers(questions: &[DnsQuestion]) -> Vec<DnsAnswer> {
+    questions
+        .iter()
+        .map(|question| {
+            // For now, return a dummy A record pointing to 8.8.8.8
+            DnsAnswer::new_a_record(
+                question.name.clone(),
+                60, // TTL: 60 seconds
+                [8, 8, 8, 8],
+            )
+        })
+        .collect()
+}
+
+/// Build the complete DNS response message
+fn build_response(header: &DnsHeader, questions: &[DnsQuestion], answers: &[DnsAnswer]) -> Vec<u8> {
+    let mut response = Vec::new();
+
+    // Add header
+    response.extend_from_slice(&header.to_bytes());
+
+    // Add questions (echo them back)
+    for question in questions {
+        response.extend(question.to_bytes());
+    }
+
+    // Add answers
+    for answer in answers {
+        response.extend(answer.to_bytes());
+    }
+
+    response
+}
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -15,68 +98,22 @@ fn main() {
         match udp_socket.recv_from(&mut buf) {
             Ok((size, source)) => {
                 println!("Received {} bytes from {}", size, source);
-                let request_header = DnsHeader::from_bytes(&buf[0..12]).unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
-                    // Return a default header or handle error differently
-                    std::process::exit(1);
-                });
 
-                let request_flags = dns_header::DnsFlags::from_u16(request_header.flags);
-
-                // Create response flags in a convenient manner
-                let response_flags = DnsFlags {
-                    qr: true,                                             // This is a response
-                    opcode: request_flags.opcode,                         // Standard query
-                    aa: false,                                            // Not authoritative
-                    tc: false,                                            // Not truncated
-                    rd: request_flags.rd,                                 // Recursion not desired
-                    ra: false,                                            // Recursion not available
-                    z: 0,                                                 // Reserved
-                    rcode: if request_flags.opcode == 0 { 0 } else { 4 }, //     0 (no error) if standard query, else 4 (not implemented
+                // Parse the request
+                let (request_header, questions) = match parse_request(&buf[..size]) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("Error parsing request: {}", e);
+                        continue;
+                    }
                 };
 
-                // Create response header using DnsHeader struct
-                let response_header_struct = DnsHeader {
-                    id: request_header.id,                         // Echo the request ID
-                    flags: response_flags.to_u16(),                // Convert flags to u16
-                    question_count: request_header.question_count, // Echo question count
-                    answer_count: 1,                               // One answer
-                    authority_count: 0,
-                    additional_count: 0,
-                };
+                // Create response components
+                let answers = create_response_answers(&questions);
+                let response_header = create_response_header(&request_header, answers.len() as u16);
 
-                let response_header = response_header_struct.to_bytes();
-                // DNS Question Section (dummy values)
-                // Format: QNAME + QTYPE (2 bytes) + QCLASS (2 bytes)
-                // Using a simple example: "\x0ccodecrafters\x02io\x00" (codecrafters.io) + TYPE A + CLASS IN
-                let response_question: Vec<u8> = vec![
-                    // QNAME: codecrafters.io encoded as length-prefixed labels
-                    0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r',
-                    b's', // "codecrafters" (11 chars)
-                    0x02, b'i', b'o', // "io" (2 chars)
-                    0x00, // null terminator
-                    0x00, 0x01, // QTYPE: A record (0x0001)
-                    0x00, 0x01, // QCLASS: IN (Internet) (0x0001)
-                ];
-
-                let response_answer: Vec<u8> = vec![
-                    // NAME: codecrafters.io encoded as length-prefixed labels
-                    0x0c, b'c', b'o', b'd', b'e', b'c', b'r', b'a', b'f', b't', b'e', b'r',
-                    b's', // "codecrafters" (11 chars)
-                    0x02, b'i', b'o', // "io" (2 chars)
-                    0x00, // null terminator
-                    0x00, 0x01, // TYPE: A record (0x0001)
-                    0x00, 0x01, // CLASS: IN (Internet) (0x0001)
-                    0x00, 0x00, 0x00, 0x3c, // TTL: 60 seconds
-                    0x00, 0x04, // RDLENGTH: 4 bytes
-                    0x08, 0x08, 0x08, 0x08, // RDATA: Any IP address (from example 8.8.8.8)
-                ];
-
-                // Combine header and question into response
-                let mut response = Vec::new();
-                response.extend_from_slice(&response_header);
-                response.extend_from_slice(&response_question);
-                response.extend_from_slice(&response_answer);
+                // Build and send response
+                let response = build_response(&response_header, &questions, &answers);
 
                 udp_socket
                     .send_to(&response, source)
