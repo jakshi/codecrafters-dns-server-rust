@@ -7,6 +7,16 @@ mod dns_question_and_answer;
 use dns_header::{DnsFlags, DnsHeader};
 use dns_question_and_answer::{DnsAnswer, DnsQuestion, RecordClass, RecordType};
 
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(name = "dns-server")]
+struct Args {
+    /// Upstream DNS resolver address (e.g., 8.8.8.8:53)
+    #[arg(long)]
+    resolver: Option<String>,
+}
+
 /// Parse the DNS request from the buffer
 /// Takes an immutable borrow of the buffer, returns owned structures
 fn parse_request(buf: &[u8]) -> Result<(DnsHeader, Vec<DnsQuestion>), String> {
@@ -23,6 +33,32 @@ fn parse_request(buf: &[u8]) -> Result<(DnsHeader, Vec<DnsQuestion>), String> {
     }
 
     Ok((header, questions))
+}
+
+/// Parse answers from an upstream DNS response
+/// Returns the answers extracted from the response
+fn parse_answers_from_response(buf: &[u8]) -> Result<Vec<DnsAnswer>, String> {
+    // Parse the header first to get answer count
+    let header = DnsHeader::from_bytes(&buf[0..12])
+        .map_err(|e| format!("Failed to parse response header: {}", e))?;
+
+    let mut offset = 12; // Start after header
+
+    // Skip over the question section
+    for _ in 0..header.question_count {
+        let (_, new_offset) = DnsQuestion::from_bytes(buf, offset)?;
+        offset = new_offset;
+    }
+
+    // Parse the answers
+    let mut answers = Vec::new();
+    for _ in 0..header.answer_count {
+        let (answer, new_offset) = DnsAnswer::from_bytes(buf, offset)?;
+        answers.push(answer);
+        offset = new_offset;
+    }
+
+    Ok(answers)
 }
 
 /// Create response header based on request header
@@ -87,9 +123,40 @@ fn build_response(header: &DnsHeader, questions: &[DnsQuestion], answers: &[DnsA
     response
 }
 
+/// Build a DNS query with a single question to send to upstream resolver
+fn build_single_question_query(original_id: u16, question: &DnsQuestion) -> Vec<u8> {
+    let mut query = Vec::new();
+
+    // Build header for a standard query
+    let header = DnsHeader {
+        id: original_id,
+        flags: 0x0100, // Claudflare 1.1.1.1 would like RD bit to be set (using 0x0100 for RD=1)
+        question_count: 1, // Single question
+        answer_count: 0,
+        authority_count: 0,
+        additional_count: 0,
+    };
+
+    // Add header
+    query.extend_from_slice(&header.to_bytes());
+
+    // Add the single question
+    query.extend(question.to_bytes());
+
+    query
+}
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
+
+    let args = Args::parse();
+
+    let resolver = args.resolver.as_ref();
+
+    if let Some(addr) = resolver {
+        println!("Using resolver: {}", addr);
+    }
 
     let udp_socket = UdpSocket::bind("127.0.0.1:2053").expect("Failed to bind to address");
     let mut buf = [0; 512];
@@ -108,11 +175,47 @@ fn main() {
                     }
                 };
 
-                // Create response components
-                let answers = create_response_answers(&questions);
-                let response_header = create_response_header(&request_header, answers.len() as u16);
+                let mut answers: Vec<DnsAnswer> = Vec::new();
+
+                if let Some(resolver_addr) = resolver {
+                    // Forward the request to the upstream resolver
+
+                    // Create a socket for upstream communication
+                    let upstream_socket =
+                        UdpSocket::bind("0.0.0.0:0").expect("Failed to bind upstream socket");
+
+                    // in case we have multiple questions, let's split them before sending to public resovler
+                    // public resolvers often like single question
+                    for question in &questions {
+                        let single_query = build_single_question_query(request_header.id, question);
+
+                        // Forward to resolver
+                        upstream_socket
+                            .send_to(&single_query, resolver_addr)
+                            .expect("Failed to send to resolver");
+
+                        let mut response_buf = [0u8; 512];
+                        let (response_size, _) = upstream_socket
+                            .recv_from(&mut response_buf)
+                            .expect("Failed to receive from upstream resolver");
+
+                        match parse_answers_from_response(&response_buf[..response_size]) {
+                            Ok(mut parsed_answers) => {
+                                answers.append(&mut parsed_answers);
+                            }
+                            Err(e) => {
+                                eprintln!("Error parsing upstream response: {}", e);
+                                continue;
+                            }
+                        }
+                    }
+                } else {
+                    // Create response components
+                    let answers = create_response_answers(&questions);
+                }
 
                 // Build and send response
+                let response_header = create_response_header(&request_header, answers.len() as u16);
                 let response = build_response(&response_header, &questions, &answers);
 
                 udp_socket
