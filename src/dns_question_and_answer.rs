@@ -1,5 +1,3 @@
-use std::io::{self, Cursor, Read};
-
 /// DNS Question Section
 /// Format: QNAME + QTYPE (2 bytes) + QCLASS (2 bytes)
 #[derive(Debug, Clone)]
@@ -22,7 +20,10 @@ pub struct DnsAnswer {
 }
 
 /// Common DNS record types
+/// I use only A and AAAA for this implementation
+/// Other types can be added as needed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum RecordType {
     A = 1,     // IPv4 address
     NS = 2,    // Name server
@@ -35,6 +36,9 @@ pub enum RecordType {
     OPT = 41,  // EDNS0 option
 }
 
+/// Currently I forward record types as-is, so these conversion functions are not used
+/// However, they can be useful for future extensions
+#[allow(dead_code)]
 impl RecordType {
     pub fn from_u16(value: u16) -> Option<Self> {
         match value {
@@ -57,6 +61,10 @@ impl RecordType {
 }
 
 /// Common DNS classes
+/// That's kinda hard to justify
+/// Most records are IN (Internet)
+/// But I include others for completeness
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordClass {
     IN = 1, // Internet
@@ -65,6 +73,10 @@ pub enum RecordClass {
     HS = 4, // Hesiod
 }
 
+/// That's kinda hard to justify
+/// Most records are IN (Internet)
+/// But I include others for completeness
+#[allow(dead_code)]
 impl RecordClass {
     pub fn from_u16(value: u16) -> Option<Self> {
         match value {
@@ -203,6 +215,9 @@ impl DnsAnswer {
     }
 
     /// Create an AAAA record (IPv6 address) answer
+    /// I added this for completeness, even though the current server implementation does not use it
+    /// Can be useful for future extensions
+    #[allow(dead_code)]
     pub fn new_aaaa_record(name: String, ttl: u32, ip: [u8; 16]) -> Self {
         Self::new(
             name,

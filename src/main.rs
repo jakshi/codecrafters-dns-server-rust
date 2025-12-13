@@ -5,7 +5,7 @@ mod dns_header;
 mod dns_question_and_answer;
 
 use dns_header::{DnsFlags, DnsHeader};
-use dns_question_and_answer::{DnsAnswer, DnsQuestion, RecordClass, RecordType};
+use dns_question_and_answer::{DnsAnswer, DnsQuestion};
 
 use clap::Parser;
 
@@ -211,7 +211,7 @@ fn main() {
                     }
                 } else {
                     // Create response components
-                    let answers = create_response_answers(&questions);
+                    answers = create_response_answers(&questions);
                 }
 
                 // Build and send response
