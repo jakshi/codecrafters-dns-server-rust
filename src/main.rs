@@ -123,6 +123,42 @@ fn build_response(header: &DnsHeader, questions: &[DnsQuestion], answers: &[DnsA
     response
 }
 
+/// Forward questions to upstream resolver and collect answers
+/// Creates a new socket, sends each question individually, and collects all answers
+fn forward_to_resolver(
+    resolver_addr: &str,
+    request_id: u16,
+    questions: &[DnsQuestion],
+) -> Result<Vec<DnsAnswer>, String> {
+    // Create a socket for upstream communication
+    let upstream_socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Failed to bind upstream socket: {}", e))?;
+
+    let mut answers = Vec::new();
+
+    // Public resolvers often like single question, so we split them
+    for question in questions {
+        let single_query = build_single_question_query(request_id, question);
+
+        // Forward to resolver
+        upstream_socket
+            .send_to(&single_query, resolver_addr)
+            .map_err(|e| format!("Failed to send to resolver: {}", e))?;
+
+        // Receive response from upstream resolver
+        let mut response_buf = [0u8; 512];
+        let (response_size, _) = upstream_socket
+            .recv_from(&mut response_buf)
+            .map_err(|e| format!("Failed to receive from resolver: {}", e))?;
+
+        // Parse answers from upstream response
+        let mut parsed_answers = parse_answers_from_response(&response_buf[..response_size])?;
+        answers.append(&mut parsed_answers);
+    }
+
+    Ok(answers)
+}
+
 /// Build a DNS query with a single question to send to upstream resolver
 fn build_single_question_query(original_id: u16, question: &DnsQuestion) -> Vec<u8> {
     let mut query = Vec::new();
@@ -175,44 +211,20 @@ fn main() {
                     }
                 };
 
-                let mut answers: Vec<DnsAnswer> = Vec::new();
-
-                if let Some(resolver_addr) = resolver {
+                // Get answers - either from upstream resolver or generate locally
+                let answers = if let Some(resolver_addr) = resolver {
                     // Forward the request to the upstream resolver
-
-                    // Create a socket for upstream communication
-                    let upstream_socket =
-                        UdpSocket::bind("0.0.0.0:0").expect("Failed to bind upstream socket");
-
-                    // in case we have multiple questions, let's split them before sending to public resovler
-                    // public resolvers often like single question
-                    for question in &questions {
-                        let single_query = build_single_question_query(request_header.id, question);
-
-                        // Forward to resolver
-                        upstream_socket
-                            .send_to(&single_query, resolver_addr)
-                            .expect("Failed to send to resolver");
-
-                        let mut response_buf = [0u8; 512];
-                        let (response_size, _) = upstream_socket
-                            .recv_from(&mut response_buf)
-                            .expect("Failed to receive from upstream resolver");
-
-                        match parse_answers_from_response(&response_buf[..response_size]) {
-                            Ok(mut parsed_answers) => {
-                                answers.append(&mut parsed_answers);
-                            }
-                            Err(e) => {
-                                eprintln!("Error parsing upstream response: {}", e);
-                                continue;
-                            }
+                    match forward_to_resolver(resolver_addr, request_header.id, &questions) {
+                        Ok(ans) => ans,
+                        Err(e) => {
+                            eprintln!("Error forwarding to resolver: {}", e);
+                            continue;
                         }
                     }
                 } else {
-                    // Create response components
-                    answers = create_response_answers(&questions);
-                }
+                    // No resolver configured - create dummy response locally
+                    create_response_answers(&questions)
+                };
 
                 // Build and send response
                 let response_header = create_response_header(&request_header, answers.len() as u16);
