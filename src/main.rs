@@ -182,6 +182,27 @@ fn build_single_question_query(original_id: u16, question: &DnsQuestion) -> Vec<
     query
 }
 
+/// Handle a DNS request: parse, resolve, and build response
+fn handle_request(buf: &[u8], resolver: Option<&String>) -> Result<Vec<u8>, String> {
+    // Parse the request
+    let (request_header, questions) = parse_request(buf)?;
+
+    // Get answers - either from upstream resolver or generate locally
+    let answers = if let Some(resolver_addr) = resolver {
+        // Forward the request to the upstream resolver
+        forward_to_resolver(resolver_addr, request_header.id, &questions)?
+    } else {
+        // No resolver configured - create dummy response locally
+        create_response_answers(&questions)
+    };
+
+    // Build response
+    let response_header = create_response_header(&request_header, answers.len() as u16);
+    let response = build_response(&response_header, &questions, &answers);
+
+    Ok(response)
+}
+
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
@@ -202,37 +223,16 @@ fn main() {
             Ok((size, source)) => {
                 println!("Received {} bytes from {}", size, source);
 
-                // Parse the request
-                let (request_header, questions) = match parse_request(&buf[..size]) {
-                    Ok(result) => result,
+                match handle_request(&buf[..size], resolver) {
+                    Ok(response) => {
+                        udp_socket
+                            .send_to(&response, source)
+                            .expect("Failed to send response");
+                    }
                     Err(e) => {
-                        eprintln!("Error parsing request: {}", e);
-                        continue;
+                        eprintln!("Error handling request: {}", e);
                     }
-                };
-
-                // Get answers - either from upstream resolver or generate locally
-                let answers = if let Some(resolver_addr) = resolver {
-                    // Forward the request to the upstream resolver
-                    match forward_to_resolver(resolver_addr, request_header.id, &questions) {
-                        Ok(ans) => ans,
-                        Err(e) => {
-                            eprintln!("Error forwarding to resolver: {}", e);
-                            continue;
-                        }
-                    }
-                } else {
-                    // No resolver configured - create dummy response locally
-                    create_response_answers(&questions)
-                };
-
-                // Build and send response
-                let response_header = create_response_header(&request_header, answers.len() as u16);
-                let response = build_response(&response_header, &questions, &answers);
-
-                udp_socket
-                    .send_to(&response, source)
-                    .expect("Failed to send response");
+                }
             }
             Err(e) => {
                 eprintln!("Error receiving data: {}", e);
